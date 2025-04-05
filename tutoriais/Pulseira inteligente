@@ -19,24 +19,25 @@ Implementação de um tutorial para a criação de uma Pulseira Inteligente para
 
 ## Introdução
 
-Explique o propósito do projeto em um contexto de saúde. Por exemplo, o monitoramento de sinais vitais em tempo real para pacientes, ou um sistema de alarme para quedas. Inclua uma breve visão sobre como o projeto se integra ao ambiente IoT.
-
+Este projeto tem como objetivo fornecer uma solução acessível e eficiente para o monitoramento contínuo de idosos e pacientes crônicos, integrando tecnologias IoT para garantir maior segurança e qualidade de vida. Com o envelhecimento populacional e o aumento de doenças crônicas, sistemas de monitoramento remoto tornam-se essenciais para:
+Detecção precoce de alterações nos sinais vitais;
+Localização imediata em casos de emergência;
+Redução do tempo de resposta em situações críticas;
+Acompanhamento contínuo por cuidadores e familiares.
 ---
 
 ## Requisitos
-
 ### Hardware
-
-- **Placa**: ESP32, 
-- **Sensores**: Detalhe cada sensor, como sensores de temperatura, oxímetro, acelerômetro, entre outros
-- **Atuadores**: Como LEDs, buzzer, relés, etc.
-- **Outros componentes**: Jumpers, resistores, display LCD, etc.
+- **Placa**: Microcontrolador ESP32 - receber e enviar dados via wifi;
+- **Sensores**: Sensor MAX30100 - frequência de batimentos cardíacos e saturação de oxigênio; GPS NEO-6M - para determinar a localização do paciente.
+- **Outros componentes**: Resistor (220Ω-330Ω), Led e Buzzer - indicar status de emergência.
 
 ### Software
 
-- **Linguagens**: C/C++ para Arduino e ESP32, Python para Raspberry Pi
-- **IDE**: Arduino IDE, Thonny para Raspberry Pi, VS Code (opcional)
-- **Bibliotecas**: Liste as bibliotecas necessárias, como `Adafruit_Sensor`, `DHT`, entre outras.
+- **Linguagens**: C/C++ para ESP32
+- **IDE**: Arduino IDE
+- **Bibliotecas**: WiFi, FirebaseESP32, Wire.h, MAX30100_PulseOximeter, TinyGPS++, HardwareSerial.
+- **Banco de Dados**: Firebase.
 
 ---
 
@@ -44,27 +45,43 @@ Explique o propósito do projeto em um contexto de saúde. Por exemplo, o monito
 
 ### Passo 1: Instalação do Software
 
-- **Arduino IDE**: Instruções para instalar e configurar a IDE do Arduino para ESP32/Arduino.
-- **Thonny Python**: Configuração do Thonny para programar em Python no Raspberry Pi.
-- **Bibliotecas**: Como instalar as bibliotecas necessárias. Exemplo:
-
-```bash
-# Instalar bibliotecas do Python
-pip install Adafruit_DHT
-```
+- Arduino IDE: Baixe e instale o Arduino IDE a partir do site https://www.arduino.cc/en/software.
+- Adicionar o ESP32 dev no Gerenciador de Placas do Arduino IDE.
+- Instalar as bibliotecas necessárias.
+- Criar um banco de dados no Firebase para armazenar os registros:  
+Acesse o Firebase Console e crie um novo projeto. 
+Vá em Build > Realtime Database e clique em Criar Banco de Dados.  
+Escolha um local (exemplo: us-central1) e selecione modo de teste para evitar problemas de permissão.  
+Vá em Configurações do Projeto > Contas de Serviço e copie a Chave da API.  
+- Configurar APIs para envio de dados via HTTP. 
 
 ### Passo 2: Configuração das Placas
 
-- **Arduino/ESP32**: Passos para configurar a placa e selecionar a porta correta na IDE.
-- **Raspberry Pi**: Configuração do GPIO para comunicação com os sensores.
+Conecte o Arduino ao computador via USB.
+No Arduino IDE, vá em Ferramentas > Placa e selecione Arduino Uno.
+Em Ferramentas > Porta, escolha a porta correspondente ao Arduino conectado.
 
 ---
 
 ## Montagem do Circuito
 
-Insira um diagrama do circuito, ou descreva as conexões principais, incluindo onde cada sensor e atuador deve ser conectado. 
+Conecte o sensor MAX30100, o buzzer e o led conforme o esquema a seguir:
 
-> **Nota**: Use imagens ou diagramas para auxiliar a compreensão.
+VCC do MAX30100 ao pino 3.3V	no ESP32;
+GND	do MAX30100 ao GND do ESP32;
+SDA	do MAX30100 ao pino 21 do ESP32;
+SCL	do MAX30100 ao pino 22 do ESP32;
+LED (+) ao pino 12	do ESP32;
+LED (-) ao GND do ESP32	Via resistor (220Ω-330Ω).
+Buzzer (+) ao pino 35	do ESP32;
+Buzzer (-) ao GND do ESP32;
+Botão conectado ao pino 18 do ESP32;
+VCC do GPS NEO-6M no VIN (5V) do ESP32;
+GND do GPS NEO-6M ao GND do ESP32;
+TX do GPS NEO-6M ao RX0 do ESP32;
+RX do GPS NEO-6M ao TX0 do ESP32.
+
+![Simulação da pulseira inteligente de monitoramento](https://wokwi.com/projects/426602736970433537)
 
 ---
 
@@ -72,46 +89,120 @@ Insira um diagrama do circuito, ou descreva as conexões principais, incluindo o
 
 ### Passo 1: Configuração dos Sensores e Atuadores
 
-Forneça o código para a configuração dos sensores. Por exemplo, para medir temperatura e batimentos cardíacos:
+Código em C para Arduino:
 
-**Exemplo em C para ESP32:**
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+#include <Wire.h>
+#include "MAX30100_PulseOximeter.h"
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
 
-```cpp
-#include <DHT.h>
+// Configuração do Firebase
+#define FIREBASE_HOST "SEU_FIREBASE.firebaseio.com"
+#define FIREBASE_AUTH "SUA_CHAVE_DO_FIREBASE"
+FirebaseData firebaseData;
 
-#define DHTPIN 2     // Pino do sensor DHT
-#define DHTTYPE DHT11 
+// Configuração do Wi-Fi
+const char* ssid = "SEU_WIFI";
+const char* password = "SUA_SENHA";
 
-DHT dht(DHTPIN, DHTTYPE);
+// Configuração do MAX30100
+PulseOximeter pox;
+#define REPORTING_PERIOD_MS 1000
+uint32_t tsLastReport = 0;
+
+// Configuração do GPS
+static const int RXPin = 16, TXPin = 17;
+static const uint32_t GPSBaud = 9600;
+TinyGPSPlus gps;
+HardwareSerial ss(1);
+
+// Configuração do Botão de Emergência, LED e Buzzer
+#define BOTAO 4
+#define LED 2
+#define BUZZER 5
+
+void onBeatDetected() {
+    Serial.println("Batimento detectado!");
+}
 
 void setup() {
-  Serial.begin(9600);
-  dht.begin();
+    Serial.begin(115200);
+    
+    // Conexão Wi-Fi
+    WiFi.begin(ssid, password);
+    Serial.print("Conectando ao Wi-Fi");
+    while (WiFi.status() != WL_CONNECTED) {
+        Serial.print(".");
+        delay(1000);
+    }
+    Serial.println("\nConectado ao Wi-Fi!");
+    
+    // Conectar ao Firebase
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+    Firebase.reconnectWiFi(true);
+    
+    // Inicializar o MAX30100
+    if (!pox.begin()) {
+        Serial.println("Falha ao inicializar o MAX30100!");
+        while (1);
+    }
+    pox.setOnBeatDetectedCallback(onBeatDetected);
+    
+    // Inicializar o GPS
+    ss.begin(GPSBaud, SERIAL_8N1, RXPin, TXPin);
+    
+    // Configuração do Botão, LED e Buzzer
+    pinMode(BOTAO, INPUT_PULLUP);
+    pinMode(LED, OUTPUT);
+    pinMode(BUZZER, OUTPUT);
 }
 
 void loop() {
-  float temp = dht.readTemperature();
-  Serial.println(temp);
-  delay(2000);
+    // Atualizar leitura do MAX30100
+    pox.update();
+    
+    if (millis() - tsLastReport > REPORTING_PERIOD_MS) {
+        tsLastReport = millis();
+        float bpm = pox.getHeartRate();
+        float spo2 = pox.getSpO2();
+        
+        Serial.print("BPM: "); Serial.print(bpm);
+        Serial.print(" | SpO2: "); Serial.println(spo2);
+        
+        Firebase.setFloat(firebaseData, "/pulseira/bpm", bpm);
+        Firebase.setFloat(firebaseData, "/pulseira/spo2", spo2);
+    }
+    
+    // Capturar localização GPS
+    while (ss.available() > 0) {
+        gps.encode(ss.read());
+        if (gps.location.isUpdated()) {
+            float latitude = gps.location.lat();
+            float longitude = gps.location.lng();
+            
+            Serial.print("Latitude: "); Serial.print(latitude);
+            Serial.print(" | Longitude: "); Serial.println(longitude);
+            
+            Firebase.setFloat(firebaseData, "/pulseira/latitude", latitude);
+            Firebase.setFloat(firebaseData, "/pulseira/longitude", longitude);
+        }
+    }
+    
+    // Verificar se o botão de emergência foi pressionado
+    if (digitalRead(BOTAO) == LOW) {
+        Serial.println("🚨 Botão de emergência pressionado!");
+        Firebase.setBool(firebaseData, "/pulseira/emergencia", true);
+        digitalWrite(LED, HIGH);
+        digitalWrite(BUZZER, HIGH);
+        delay(2000);
+        digitalWrite(LED, LOW);
+        digitalWrite(BUZZER, LOW);
+    }
 }
+
 ```
-
-**Exemplo em Python para Raspberry Pi:**
-
-```python
-import Adafruit_DHT
-
-sensor = Adafruit_DHT.DHT11
-pin = 4  # Pino GPIO
-
-humidity, temperature = Adafruit_DHT.read_retry(sensor, pin)
-print(f"Temperatura: {temperature}ºC")
-```
-
-### Passo 2: Processamento e Lógica de Alerta
-
-Adicione a lógica para processar os dados e acionar atuadores, como LEDs ou buzzer, caso as leituras excedam um determinado limite.
-
 ---
 
 ## Teste e Validação
@@ -119,8 +210,7 @@ Adicione a lógica para processar os dados e acionar atuadores, como LEDs ou buz
 Descreva os testes para validar cada parte do projeto:
 
 1. **Testando Sensores**: Verifique se as leituras são consistentes e corretas.
-2. **Validação dos Atuadores**: Confirme que os atuadores funcionam corretamente.
-3. **Monitoramento em Tempo Real**: Teste o sistema completo em condições simuladas para garantir que funciona conforme o esperado.
+2. **Monitoramento em Tempo Real**: Teste o sistema completo em condições simuladas para garantir que funciona conforme o esperado.
 
 ---
 
@@ -128,16 +218,13 @@ Descreva os testes para validar cada parte do projeto:
 
 Sugestões para melhorar o projeto, como:
 
-- Adicionar comunicação Wi-Fi (ESP32) para enviar dados para uma nuvem.
-- Integrar um banco de dados para registro das leituras.
-- Conectar-se a uma aplicação móvel para visualização remota.
+- Sensor de Queda (Acelerômetro/MPU6050) - Detectar quedas e enviar alertas automáticos aos cuidadores.
+- Limiar de Emergência Automático - Alertar cuidadores se: Batimento cardíaco < 50 ou > 120 BPM, SpO₂ < 90% e queda detectada (via acelerômetro).
+- Anti-Acionamento Acidental - Exigir pressão longa (3 segundos) no botão de emergência ou usar dupla confirmação (LED piscando).
 
 ---
 
 ## Referências
 
-Liste todas as referências e links úteis para guias, bibliotecas, e materiais adicionais que ajudem a complementar o tutorial.
-
----
-
-Espero que esse modelo ajude a organizar o conteúdo e fornecer uma estrutura clara e completa para tutoriais de IoT no contexto da saúde.
+- Link para simulação: https://wokwi.com/projects/426602736970433537
+- Documentação do Arduino: https://www.arduino.cc/.
